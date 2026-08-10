@@ -1,0 +1,7 @@
+docaligner-docsaid
+opencv-python
+shapely
+numpy
+matplotlib
+gradio
+onnxruntime

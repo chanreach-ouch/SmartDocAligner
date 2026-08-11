@@ -13,6 +13,7 @@ except ImportError:
     pass
 
 from docaligner import DocAligner
+from segmentation_model import detect_document_segmentation
 
 # Initialize model once globally
 try:
@@ -87,49 +88,71 @@ def crop_document(image, corners):
     
     return warped
 
-def process_image(image):
+def process_image(image, model_choice):
     """
     Gradio interface function.
     """
     if image is None:
-        return None, None, "Please upload an image."
+        return "Please upload an image.", None, None, None, None
         
-    corners = detect_document_corners(image)
+    res_msg = []
     
-    if corners is None:
-        return image, None, "❌ Failed to detect a document in the image (no valid 4-point quad found). Try another photo."
-        
-    # Draw corners on original image
-    vis_img = image.copy()
-    corners_int = corners.astype(np.int32)
-    cv2.polylines(vis_img, [corners_int], isClosed=True, color=(0, 255, 0), thickness=4)
-    for pt in corners_int:
-        cv2.circle(vis_img, tuple(pt), radius=8, color=(255, 0, 0), thickness=-1)
-        
-    # Crop the document
-    cropped_img = crop_document(image, corners)
+    doc_vis, doc_crop = None, None
+    dalai_vis, dalai_crop = None, None
     
-    return vis_img, cropped_img, "✅ Document detected successfully!"
+    if model_choice in ["DocAligner (corner detection)", "Compare both"]:
+        corners = detect_document_corners(image)
+        if corners is None:
+            res_msg.append("DocAligner: ❌ Failed to detect document corners.")
+            doc_vis = image.copy()
+        else:
+            doc_vis = image.copy()
+            corners_int = corners.astype(np.int32)
+            cv2.polylines(doc_vis, [corners_int], isClosed=True, color=(0, 255, 0), thickness=4)
+            for pt in corners_int:
+                cv2.circle(doc_vis, tuple(pt), radius=8, color=(255, 0, 0), thickness=-1)
+            doc_crop = crop_document(image, corners)
+            res_msg.append("DocAligner: ✅ Document detected.")
+            
+    if model_choice in ["Document Segmentation (DALAI)", "Compare both"]:
+        d_vis, d_crop, d_msg = detect_document_segmentation(image)
+        dalai_vis = d_vis
+        dalai_crop = d_crop
+        res_msg.append(f"DALAI: {d_msg}")
+        
+    return "\n".join(res_msg), doc_vis, doc_crop, dalai_vis, dalai_crop
 
-# Build Gradio UI
-with gr.Blocks(title="DocAligner Tester") as demo:
-    gr.Markdown("# 📄 DocAligner Interactive Tester")
-    gr.Markdown("Upload a photo of a paper document to test DocAligner's corner detection and auto-crop capabilities. The model uses the pretrained lightweight `fastvit_sa24` backbone.")
+# Build Gradio UI 
+with gr.Blocks(title="Document Detection Tester") as demo:
+    gr.Markdown("# 📄 Document Detection Tester")
+    gr.Markdown("Compare **DocAligner** (corner detection) against **DALAI** (content segmentation) for document extraction.")
     
     with gr.Row():
-        with gr.Column():
+        with gr.Column(scale=1):
             input_img = gr.Image(label="Upload Image", type="numpy")
+            model_choice = gr.Radio(
+                choices=["DocAligner (corner detection)", "Document Segmentation (DALAI)", "Compare both"],
+                value="Compare both",
+                label="Select Detection Model"
+            )
             submit_btn = gr.Button("Detect & Crop", variant="primary")
-        
-        with gr.Column():
-            output_msg = gr.Textbox(label="Status / Confidence", interactive=False)
-            output_vis = gr.Image(label="Detected Corners")
-            output_crop = gr.Image(label="Perspective Cropped Result")
+            output_msg = gr.Textbox(label="Status", interactive=False)
+            
+        with gr.Column(scale=2):
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("### DocAligner Output")
+                    output_vis_doc = gr.Image(label="DocAligner Corners")
+                    output_crop_doc = gr.Image(label="DocAligner Crop")
+                with gr.Column():
+                    gr.Markdown("### DALAI Output")
+                    output_vis_dalai = gr.Image(label="DALAI Segmentation")
+                    output_crop_dalai = gr.Image(label="DALAI Crop")
             
     submit_btn.click(
         fn=process_image,
-        inputs=[input_img],
-        outputs=[output_vis, output_crop, output_msg]
+        inputs=[input_img, model_choice],
+        outputs=[output_msg, output_vis_doc, output_crop_doc, output_vis_dalai, output_crop_dalai]
     )
 
 if __name__ == "__main__":

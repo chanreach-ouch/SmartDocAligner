@@ -5,3 +5,12 @@ numpy
 matplotlib
 gradio
 onnxruntime
+torch
+torchvision
+pandas
+requests
+pyyaml
+tqdm
+seaborn
+ultralytics
+scipy

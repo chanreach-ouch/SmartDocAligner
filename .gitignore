@@ -5,3 +5,5 @@ data/
 sampleDataset/
 testDataset/
 model.pt
+models/
+*.onnx

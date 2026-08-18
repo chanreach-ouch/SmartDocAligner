@@ -26,8 +26,9 @@ python app.py
 
 - **DocAligner (corner detection)**: Uses the `fastvit_sa24` backbone to find the 4 corners of a document and applies a perspective transform to crop it flat.
 - **Document Segmentation (DALAI)**: Uses a YOLOv5 model trained to detect document contents (text, signatures, tables, images). The app aggregates the detections and draws a bounding box to crop the document area, which is highly robust to stacked pages and occluded backgrounds.
-- **Compare both**: Run both models side-by-side to evaluate which approach works best for a given image.
-
+- **OpenCV Crop Method**: A classic, lightweight computer vision approach using contour detection to identify document boundaries without machine learning overhead.
+- **UVDoc Document Unwarping (Paddle & ONNX)**: Uses the state-of-the-art UVDoc model to unwarp curved and folded documents into a perfectly flat plane. We support both PaddleOCR and ONNX runtimes. *(See `README_UVDOC.md` for more details).*
+- **Compare both**: Run multiple models side-by-side to evaluate which approach works best for a given image.
 ## Running the Evaluation Script
 
 To run the evaluation script against the test dataset:

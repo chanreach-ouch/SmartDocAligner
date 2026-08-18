@@ -47,6 +47,37 @@ def detect_document_corners(image):
         print(f"Detection error: {e}")
         return None
 
+def detect_document_corners_opencv(image):
+    """
+    Detects document corners using classical OpenCV methods (Canny Edge + Contours).
+    """
+    try:
+        # Convert to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        # Apply Gaussian Blur
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        # Edge detection
+        edged = cv2.Canny(blur, 75, 200)
+
+        # Find contours
+        contours, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        # Sort contours by area, keeping only the largest ones
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+
+        for c in contours:
+            # Approximate the contour
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+
+            # If our approximated contour has four points, we can assume we found the document
+            if len(approx) == 4:
+                return approx.reshape(4, 2)
+                
+        return None
+    except Exception as e:
+        print(f"OpenCV detection error: {e}")
+        return None
+
 def crop_document(image, corners):
     """
     Crops and applies perspective transform to extract the document.
@@ -93,34 +124,132 @@ def process_image(image, model_choice):
     Gradio interface function.
     """
     if image is None:
-        return "Please upload an image.", None, None, None, None
+        return "Please upload an image.", gr.update(visible=False), gr.update(), None, None, gr.update(visible=False), gr.update(), None, None
+        
+    # Ensure image is RGB (Gradio sometimes passes RGBA)
+    if len(image.shape) == 3 and image.shape[2] == 4:
+        image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
         
     res_msg = []
     
-    doc_vis, doc_crop = None, None
-    dalai_vis, dalai_crop = None, None
+    # Defaults
+    vis1, crop1 = None, None
+    vis2, crop2 = None, None
+    title1, title2 = f"### {model_choice} Output", ""
+    show_col2 = False
     
-    if model_choice in ["DocAligner (corner detection)", "Compare both"]:
+    if model_choice == "Compare both":
+        # Run DocAligner
         corners = detect_document_corners(image)
         if corners is None:
             res_msg.append("DocAligner: ❌ Failed to detect document corners.")
-            doc_vis = image.copy()
+            vis1 = image.copy()
         else:
-            doc_vis = image.copy()
+            vis1 = image.copy()
             corners_int = corners.astype(np.int32)
-            cv2.polylines(doc_vis, [corners_int], isClosed=True, color=(0, 255, 0), thickness=4)
+            cv2.polylines(vis1, [corners_int], isClosed=True, color=(0, 255, 0), thickness=4)
             for pt in corners_int:
-                cv2.circle(doc_vis, tuple(pt), radius=8, color=(255, 0, 0), thickness=-1)
-            doc_crop = crop_document(image, corners)
+                cv2.circle(vis1, tuple(pt), radius=8, color=(255, 0, 0), thickness=-1)
+            crop1 = crop_document(image, corners)
             res_msg.append("DocAligner: ✅ Document detected.")
             
-    if model_choice in ["Document Segmentation (DALAI)", "Compare both"]:
-        d_vis, d_crop, d_msg = detect_document_segmentation(image)
-        dalai_vis = d_vis
-        dalai_crop = d_crop
+        # Run DALAI
+        vis2, crop2, d_msg = detect_document_segmentation(image)
         res_msg.append(f"DALAI: {d_msg}")
         
-    return "\n".join(res_msg), doc_vis, doc_crop, dalai_vis, dalai_crop
+        title1 = "### DocAligner Output"
+        title2 = "### DALAI Output"
+        show_col2 = True
+
+    elif model_choice == "DocAligner (corner detection)":
+        corners = detect_document_corners(image)
+        if corners is None:
+            res_msg.append("DocAligner: ❌ Failed to detect document corners.")
+            vis1 = image.copy()
+        else:
+            vis1 = image.copy()
+            corners_int = corners.astype(np.int32)
+            cv2.polylines(vis1, [corners_int], isClosed=True, color=(0, 255, 0), thickness=4)
+            for pt in corners_int:
+                cv2.circle(vis1, tuple(pt), radius=8, color=(255, 0, 0), thickness=-1)
+            crop1 = crop_document(image, corners)
+            res_msg.append("DocAligner: ✅ Document detected.")
+            
+    elif model_choice == "Document Segmentation (DALAI)":
+        vis1, crop1, d_msg = detect_document_segmentation(image)
+        res_msg.append(f"DALAI: {d_msg}")
+        
+    elif model_choice == "OpenCV crop method":
+        corners = detect_document_corners_opencv(image)
+        if corners is None:
+            res_msg.append("OpenCV: ❌ Failed to detect document corners.")
+            vis1 = image.copy()
+        else:
+            vis1 = image.copy()
+            corners_int = corners.astype(np.int32)
+            cv2.polylines(vis1, [corners_int], isClosed=True, color=(0, 255, 0), thickness=4)
+            for pt in corners_int:
+                cv2.circle(vis1, tuple(pt), radius=8, color=(255, 0, 0), thickness=-1)
+            crop1 = crop_document(image, corners)
+            res_msg.append("OpenCV: ✅ Document detected.")
+            
+    elif model_choice == "UVDoc inference model":
+        import tempfile
+        import os
+        from document_unwarping.paddle_uvdoc import unwarp_with_paddle
+        
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f_in, \
+             tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f_out:
+            in_path = f_in.name
+            out_path = f_out.name
+            
+        cv2.imwrite(in_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        res = unwarp_with_paddle(in_path, out_path)
+        
+        if res.get("error"):
+            res_msg.append(f"Paddle UVDoc Error: {res['error']}")
+            vis1 = image.copy()
+        else:
+            res_msg.append(f"Paddle UVDoc: ✅ Unwarped ({res.get('inference_time_ms', 0):.1f}ms)")
+            crop1 = cv2.cvtColor(cv2.imread(out_path), cv2.COLOR_BGR2RGB)
+            vis1 = image.copy()
+            
+        try: os.remove(in_path); os.remove(out_path)
+        except: pass
+
+    elif model_choice == "UVDoc ONNX model":
+        import tempfile
+        import os
+        from document_unwarping.onnx_uvdoc import unwarp_with_onnx
+        
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f_in, \
+             tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f_out:
+            in_path = f_in.name
+            out_path = f_out.name
+            
+        cv2.imwrite(in_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        res = unwarp_with_onnx(in_path, out_path)
+        
+        if res.get("error"):
+            res_msg.append(f"ONNX UVDoc Error: {res['error']}")
+            vis1 = image.copy()
+        else:
+            res_msg.append(f"ONNX UVDoc: ✅ Unwarped ({res.get('inference_time_ms', 0):.1f}ms)")
+            crop1 = cv2.cvtColor(cv2.imread(out_path), cv2.COLOR_BGR2RGB)
+            vis1 = image.copy()
+            
+        try: os.remove(in_path); os.remove(out_path)
+        except: pass
+        
+    elif model_choice == "Document orientation model":
+        res_msg.append(f"{model_choice}: ⚠️ Placeholder. Model weights and inference code not yet provided.")
+        vis1 = image.copy()
+        
+    return (
+        "\n".join(res_msg), 
+        gr.update(visible=True), gr.update(value=title1), vis1, crop1,
+        gr.update(visible=show_col2), gr.update(value=title2), vis2, crop2
+    )
 
 # Build Gradio UI 
 with gr.Blocks(title="Document Detection Tester") as demo:
@@ -131,7 +260,15 @@ with gr.Blocks(title="Document Detection Tester") as demo:
         with gr.Column(scale=1):
             input_img = gr.Image(label="Upload Image", type="numpy")
             model_choice = gr.Radio(
-                choices=["DocAligner (corner detection)", "Document Segmentation (DALAI)", "Compare both"],
+                choices=[
+                    "DocAligner (corner detection)", 
+                    "Document Segmentation (DALAI)", 
+                    "Compare both",
+                    "UVDoc inference model",
+                    "UVDoc ONNX model",
+                    "Document orientation model",
+                    "OpenCV crop method"
+                ],
                 value="Compare both",
                 label="Select Detection Model"
             )
@@ -140,19 +277,23 @@ with gr.Blocks(title="Document Detection Tester") as demo:
             
         with gr.Column(scale=2):
             with gr.Row():
-                with gr.Column():
-                    gr.Markdown("### DocAligner Output")
-                    output_vis_doc = gr.Image(label="DocAligner Corners")
-                    output_crop_doc = gr.Image(label="DocAligner Crop")
-                with gr.Column():
-                    gr.Markdown("### DALAI Output")
-                    output_vis_dalai = gr.Image(label="DALAI Segmentation")
-                    output_crop_dalai = gr.Image(label="DALAI Crop")
+                with gr.Column(visible=False) as col_1:
+                    title_1 = gr.Markdown("### Result")
+                    output_vis_1 = gr.Image(label="Visualization")
+                    output_crop_1 = gr.Image(label="Crop")
+                with gr.Column(visible=False) as col_2:
+                    title_2 = gr.Markdown("### Result 2")
+                    output_vis_2 = gr.Image(label="Visualization 2")
+                    output_crop_2 = gr.Image(label="Crop 2")
             
     submit_btn.click(
         fn=process_image,
         inputs=[input_img, model_choice],
-        outputs=[output_msg, output_vis_doc, output_crop_doc, output_vis_dalai, output_crop_dalai]
+        outputs=[
+            output_msg, 
+            col_1, title_1, output_vis_1, output_crop_1,
+            col_2, title_2, output_vis_2, output_crop_2
+        ]
     )
 
 if __name__ == "__main__":

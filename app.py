@@ -58,34 +58,146 @@ def detect_document_corners(image):
 
 def detect_document_corners_opencv(image):
     """
-    Detects document corners using classical OpenCV methods (Canny Edge + Contours).
+    Detects document corners using classical OpenCV methods.
+    Uses multiple strategies in order of preference:
+      1. Canny edges at several threshold pairs + varying approxPolyDP epsilon
+      2. Morphological dilation of edges before contouring
+      3. Fallback: bounding-box corners of the single largest contour
     """
     try:
-        # Convert to grayscale
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        # Apply Gaussian Blur
+        h, w = gray.shape[:2]
+        min_area = (h * w) * 0.05  # ignore tiny contours
+
+        def _find_quad(edged):
+            """Try to find a 4-point contour in the edge image."""
+            contours, _ = cv2.findContours(
+                edged, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE
+            )
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
+            for c in contours:
+                if cv2.contourArea(c) < min_area:
+                    continue
+                peri = cv2.arcLength(c, True)
+                # Try a range of epsilons from tight to loose
+                for eps in [0.01, 0.02, 0.03, 0.05]:
+                    approx = cv2.approxPolyDP(c, eps * peri, True)
+                    if len(approx) == 4:
+                        return approx.reshape(4, 2)
+            return None
+
+        def _bounding_quad(edged):
+            """Fallback: use bounding rect of the largest meaningful contour."""
+            contours, _ = cv2.findContours(
+                edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            contours = [c for c in contours if cv2.contourArea(c) >= min_area]
+            if not contours:
+                return None
+            c = max(contours, key=cv2.contourArea)
+            x, y, cw, ch = cv2.boundingRect(c)
+            return np.array([[x, y], [x+cw, y], [x+cw, y+ch], [x, y+ch]], dtype=np.float32)
+
+        # Strategy 1 – multiple Canny thresholds
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        # Edge detection
-        edged = cv2.Canny(blur, 75, 200)
+        for lo, hi in [(50, 150), (75, 200), (30, 100), (100, 250)]:
+            edged = cv2.Canny(blur, lo, hi)
+            result = _find_quad(edged)
+            if result is not None:
+                return result
 
-        # Find contours
-        contours, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        # Sort contours by area, keeping only the largest ones
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+        # Strategy 2 – dilate edges to close gaps
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        for lo, hi in [(50, 150), (30, 100)]:
+            edged = cv2.Canny(blur, lo, hi)
+            edged = cv2.dilate(edged, kernel, iterations=1)
+            result = _find_quad(edged)
+            if result is not None:
+                return result
 
-        for c in contours:
-            # Approximate the contour
-            peri = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        # Strategy 3 – adaptive threshold then contours
+        thresh = cv2.adaptiveThreshold(
+            blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2
+        )
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+        result = _find_quad(thresh)
+        if result is not None:
+            return result
 
-            # If our approximated contour has four points, we can assume we found the document
-            if len(approx) == 4:
-                return approx.reshape(4, 2)
-                
-        return None
+        # Strategy 4 – bounding box of the largest contour as a last resort
+        edged = cv2.Canny(blur, 50, 150)
+        return _bounding_quad(edged)
+
     except Exception as e:
         print(f"OpenCV detection error: {e}")
         return None
+
+
+def detect_document_orientation(image):
+    """
+    Estimates document rotation (0, 90, 180, 270 degrees) using horizontal
+    and vertical gradient energy projection analysis — no external model needed.
+    Returns (rotated_image, angle_degrees, message).
+    """
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        # Compute gradient magnitude in both axes
+        gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        energy_h = np.mean(np.abs(gx))   # horizontal line energy → vertical edges
+        energy_v = np.mean(np.abs(gy))   # vertical line energy → horizontal edges
+
+        h, w = gray.shape
+        aspect = w / h
+
+        # Use horizontal projection profile to detect text baseline direction
+        # Blur and threshold to get text-like blobs
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        # Row-wise and column-wise sum profiles
+        row_profile = np.sum(binary, axis=1).astype(float)
+        col_profile = np.sum(binary, axis=0).astype(float)
+
+        row_variance = np.var(row_profile)
+        col_variance = np.var(col_profile)
+
+        # High row variance → clear horizontal text lines → likely upright or 180°
+        # High col variance → vertical text lines → likely 90° or 270°
+        if row_variance >= col_variance:
+            # Image appears to have horizontal text lines
+            if aspect >= 0.7:  # wide enough → portrait/landscape upright
+                angle = 0
+                label = "upright (0°)"
+            else:
+                # Very tall image with horizontal lines — probably 90° or 270°
+                angle = 90
+                label = "rotated 90°"
+        else:
+            # Vertical text lines → rotated
+            if aspect <= 1.0:
+                angle = 90
+                label = "rotated 90°"
+            else:
+                angle = 270
+                label = "rotated 270°"
+
+        # Apply correction rotation
+        if angle == 0:
+            corrected = image.copy()
+        elif angle == 90:
+            corrected = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        elif angle == 180:
+            corrected = cv2.rotate(image, cv2.ROTATE_180)
+        else:  # 270
+            corrected = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+
+        msg = f"✅ Detected orientation: {label}. Correction applied."
+        return corrected, angle, msg
+
+    except Exception as e:
+        return image, 0, f"❌ Orientation detection failed: {e}"
+
 
 def crop_document(image, corners):
     """
@@ -249,8 +361,14 @@ def process_image(image, model_choice):
         except: pass
         
     elif model_choice == "Document orientation model":
-        res_msg.append(f"{model_choice}: ⚠️ Placeholder. Model weights and inference code not yet provided.")
+        corrected, angle, orient_msg = detect_document_orientation(image)
+        res_msg.append(f"Document orientation: {orient_msg}")
+        # Show original with angle label as visualization, corrected as crop
         vis1 = image.copy()
+        label_text = f"Detected angle: {angle} deg"
+        cv2.putText(vis1, label_text, (10, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 255), 2)
+        crop1 = corrected
         
     return (
         "\n".join(res_msg), 

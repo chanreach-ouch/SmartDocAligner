@@ -5,6 +5,17 @@ from .common import format_result, Timer
 # mapping from (model_name, device) -> model instance
 _model_cache = {}
 
+def _check_paddleocr_available():
+    """Returns (True, None) if paddleocr is importable, else (False, error_message)."""
+    try:
+        import paddleocr  # noqa: F401
+        return True, None
+    except ImportError:
+        return False, (
+            "paddleocr is not installed. "
+            "Install it with: pip install paddlepaddle paddleocr"
+        )
+
 def get_paddle_model(device: str):
     global _model_cache
     key = ("UVDoc", device)
@@ -23,6 +34,18 @@ def unwarp_with_paddle(
     device: str = "cpu",
 ) -> dict:
     import cv2
+    # Check if paddleocr is available before trying anything
+    available, err_msg = _check_paddleocr_available()
+    if not available:
+        return format_result(
+            input_path=image_path,
+            output_path=output_path,
+            width=0,
+            height=0,
+            inference_time_ms=0.0,
+            runtime_name="PaddleOCR",
+            error_msg=err_msg,
+        )
     try:
         if not os.path.exists(image_path):
             return format_result(
@@ -37,6 +60,7 @@ def unwarp_with_paddle(
 
         # Get or initialize the model
         model = get_paddle_model(device)
+
 
         with Timer() as t:
             results = model.predict(

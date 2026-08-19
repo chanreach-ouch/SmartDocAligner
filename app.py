@@ -2,18 +2,26 @@ import gradio as gr
 import cv2
 import numpy as np
 import traceback
+import os
 
-# Patch for TurboJPEG on Windows
+# IMPORTANT: Patch TurboJPEG BEFORE importing docaligner/capybara.
+# capybara instantiates TurboJPEG() at module-import time, which fails
+# on Windows when the native library is missing.
 try:
     import turbojpeg
     class DummyTurboJPEG:
         def __init__(self, *args, **kwargs): pass
+        def decode(self, *a, **kw): raise NotImplementedError
+        def encode(self, *a, **kw): raise NotImplementedError
     turbojpeg.TurboJPEG = DummyTurboJPEG
 except ImportError:
     pass
 
 from docaligner import DocAligner
 from segmentation_model import detect_document_segmentation
+
+# Absolute path to the models directory so ONNX loading works regardless of CWD
+_MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
 # Initialize model once globally
 try:
@@ -219,8 +227,9 @@ def process_image(image, model_choice):
 
     elif model_choice == "UVDoc ONNX model":
         import tempfile
-        import os
         from document_unwarping.onnx_uvdoc import unwarp_with_onnx
+        
+        onnx_model_path = os.path.join(_MODELS_DIR, "UVDoc_infer.onnx")
         
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f_in, \
              tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f_out:
@@ -228,7 +237,7 @@ def process_image(image, model_choice):
             out_path = f_out.name
             
         cv2.imwrite(in_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
-        res = unwarp_with_onnx(in_path, out_path)
+        res = unwarp_with_onnx(in_path, out_path, model_path=onnx_model_path)
         
         if res.get("error"):
             res_msg.append(f"ONNX UVDoc Error: {res['error']}")

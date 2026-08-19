@@ -17,16 +17,29 @@ def load_dalai_model():
         
     print("Initializing DALAI segmentation model...")
     try:
-        # Load YOLOv5 from torch.hub using local model path
-        model = torch.hub.load('ultralytics/yolov5', 'custom', path=model_path, force_reload=False, trust_repo=True)
+        # Prefer the `yolov5` pip package — it loads locally without network access.
+        import yolov5
+        model = yolov5.load(model_path)
         model.conf = 0.35  # Recommended in DALAI README
-        # Custom class names
         model.names = {0:'typewritten', 1:'handwritten', 2:'signature', 3:'image', 4:'table'}
-        print("DALAI model loaded successfully.")
+        print("DALAI model loaded successfully (via yolov5 package).")
+        return True
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"yolov5 package load failed ({e}), trying torch.hub...")
+
+    try:
+        # Fallback: torch.hub (requires network on first run)
+        model = torch.hub.load('ultralytics/yolov5', 'custom', path=model_path, force_reload=False, trust_repo=True)
+        model.conf = 0.35
+        model.names = {0:'typewritten', 1:'handwritten', 2:'signature', 3:'image', 4:'table'}
+        print("DALAI model loaded successfully (via torch.hub).")
         return True
     except Exception as e:
         print(f"Error loading DALAI model: {e}")
         return False
+
 
 def detect_document_segmentation(image):
     """

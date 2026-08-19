@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import traceback
 import os
+import tempfile
 
 # IMPORTANT: Patch TurboJPEG BEFORE importing docaligner/capybara.
 # capybara instantiates TurboJPEG() at module-import time, which fails
@@ -202,8 +203,6 @@ def process_image(image, model_choice):
             res_msg.append("OpenCV: ✅ Document detected.")
             
     elif model_choice == "UVDoc inference model":
-        import tempfile
-        import os
         from document_unwarping.paddle_uvdoc import unwarp_with_paddle
         
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f_in, \
@@ -226,7 +225,6 @@ def process_image(image, model_choice):
         except: pass
 
     elif model_choice == "UVDoc ONNX model":
-        import tempfile
         from document_unwarping.onnx_uvdoc import unwarp_with_onnx
         
         onnx_model_path = os.path.join(_MODELS_DIR, "UVDoc_infer.onnx")
